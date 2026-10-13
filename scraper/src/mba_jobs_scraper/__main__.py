@@ -12,13 +12,29 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sys
+import math
 
 from rich.console import Console
 
-from .scraper import TwelveTwentyScraper
+from .scraper import MIN_DELAY_SECONDS, TwelveTwentyScraper
 
 console = Console()
+
+
+def positive_int(value: str) -> int:
+    """Parse a positive integer for argparse."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def polite_delay(value: str) -> float:
+    """Reject request intervals that are too aggressive for the website."""
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < MIN_DELAY_SECONDS:
+        raise argparse.ArgumentTypeError(f"must be at least {MIN_DELAY_SECONDS:.1f} seconds")
+    return parsed
 
 
 def main() -> None:
@@ -27,7 +43,7 @@ def main() -> None:
         description="Scrape job postings from INSEAD's 12twenty portal.",
     )
 
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    subparsers = parser.add_subparsers(dest="command", required=True, help="Available commands")
 
     # ── login ─────────────────────────────────────────────────────────────
     subparsers.add_parser(
@@ -53,13 +69,13 @@ def main() -> None:
     scrape_parser.add_argument(
         "--limit",
         "-n",
-        type=int,
+        type=positive_int,
         default=None,
         help="Limit the number of jobs to fetch (e.g. 50).",
     )
     scrape_parser.add_argument(
         "--delay",
-        type=float,
+        type=polite_delay,
         default=1.5,
         help="Polite delay between requests in seconds (default: 1.5s with jitter).",
     )
@@ -71,10 +87,6 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-
-    if not args.command:
-        parser.print_help()
-        sys.exit(1)
 
     scraper = TwelveTwentyScraper()
 
@@ -94,8 +106,8 @@ def main() -> None:
         if jobs:
             # Print a quick summary
             console.print("\n[bold]📊 Summary[/]")
-            companies = {}
-            locations = {}
+            companies: dict[str, int] = {}
+            locations: dict[str, int] = {}
             for job in jobs:
                 ld = job.get("list_data", {})
                 company = ld.get("CompanyName", "Unknown")
