@@ -50,6 +50,19 @@ def main() -> None:
         action="store_true",
         help="Show the browser window instead of running headless.",
     )
+    scrape_parser.add_argument(
+        "--limit",
+        "-n",
+        type=int,
+        default=None,
+        help="Limit the number of jobs to fetch (e.g. 50).",
+    )
+    scrape_parser.add_argument(
+        "--delay",
+        type=float,
+        default=1.5,
+        help="Polite delay between requests in seconds (default: 1.5s with jitter).",
+    )
 
     # ── explore ───────────────────────────────────────────────────────────
     subparsers.add_parser(
@@ -73,6 +86,8 @@ def main() -> None:
             scraper.scrape(
                 with_details=args.with_details,
                 headless=not args.visible,
+                limit=args.limit,
+                delay=args.delay,
             )
         )
 

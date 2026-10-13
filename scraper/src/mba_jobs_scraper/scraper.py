@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -79,8 +80,8 @@ class TwelveTwentyScraper:
 
         console.print("\n[bold green]🔐 Opening browser for login...[/]")
         console.print(
-            "   Log in to the INSEAD 12twenty portal.\n"
-            "   Once you can see the Job Listings page, come back here.\n"
+            "   Log in to the INSEAD 12twenty portal with your student credentials.\n"
+            "   Once you reach the Job Postings page, press Enter here (or we'll auto-detect it).\n"
         )
 
         async with async_playwright() as p:
@@ -93,8 +94,19 @@ class TwelveTwentyScraper:
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(BASE_URL)
 
-            console.print("[yellow]Press Enter here when you've logged in and can see job listings...[/]")
-            await asyncio.get_event_loop().run_in_executor(None, input)
+            console.print("[yellow]Browser is open. Waiting for login... (press Enter when done)[/]")
+            loop = asyncio.get_event_loop()
+            enter_future = loop.run_in_executor(None, input)
+
+            while not enter_future.done():
+                try:
+                    if "jobPostings" in page.url:
+                        console.print("   [bold green]✓ Detected Job Postings page! Waiting 3s to persist session...[/]")
+                        await page.wait_for_timeout(3000)
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
 
             await context.close()
 
@@ -104,14 +116,16 @@ class TwelveTwentyScraper:
         self,
         with_details: bool = False,
         headless: bool = True,
+        limit: int | None = None,
+        delay: float = 1.5,
     ) -> list[dict[str, Any]]:
-        """Scrape all job postings from the portal.
+        """Scrape job postings from the portal with polite rate-limiting.
 
         Args:
             with_details: If True, also fetch the full detail page for each job.
-                          This includes description, salary, functions, industries, etc.
-                          Much slower (~2s per job).
             headless: If False, shows the browser window (useful for debugging).
+            limit: Maximum number of jobs to fetch (e.g. 50).
+            delay: Polite delay between requests in seconds (with jitter).
 
         Returns:
             List of job dictionaries, each containing 'list_data' and optionally 'detail_data'.
@@ -122,7 +136,10 @@ class TwelveTwentyScraper:
 
         console.print("\n[bold]🔍 MBA Jobs Scraper[/]")
         console.print(f"   Mode: {'with details' if with_details else 'list only'}")
-        console.print(f"   Headless: {headless}\n")
+        console.print(f"   Headless: {headless}")
+        if limit:
+            console.print(f"   Limit: [cyan]{limit}[/] jobs")
+        console.print(f"   Polite delay: [cyan]{delay:.1f}s[/] (with jitter)\n")
 
         async with async_playwright() as p:
             context = await p.chromium.launch_persistent_context(
@@ -136,7 +153,7 @@ class TwelveTwentyScraper:
                 page = context.pages[0] if context.pages else await context.new_page()
 
                 # ── Step 1: Capture initial API call ──────────────────────────
-                console.print("[bold]Step 1/4:[/] Capturing initial API request...")
+                console.print("[bold]Step 1/4:[/] Loading portal & capturing initial API request...")
                 first_response = await self._capture_initial_request(page)
 
                 if first_response is None:
@@ -149,7 +166,7 @@ class TwelveTwentyScraper:
                 page_items = first_response.get("Items", [])
                 self._list_items.extend(page_items)
 
-                console.print(f"   Found [bold cyan]{self._total_jobs}[/] total jobs (page size: {self._page_size})")
+                console.print(f"   Found [bold cyan]{self._total_jobs}[/] total jobs in portal (page size: {self._page_size})")
                 console.print(f"   Captured [green]{len(page_items)}[/] jobs from page 1")
 
                 # Log a sample of fields so we can understand the data shape
@@ -157,20 +174,28 @@ class TwelveTwentyScraper:
                     sample = page_items[0]
                     console.print(f"   Sample fields: {', '.join(sample.keys())}")
 
-                # ── Step 2: Paginate ──────────────────────────────────────────
-                total_pages = math.ceil(self._total_jobs / self._page_size)
-                if total_pages > 1:
-                    console.print(f"\n[bold]Step 2/4:[/] Fetching remaining {total_pages - 1} pages...")
-                    await self._paginate_via_fetch(page, total_pages)
+                # ── Step 2: Paginate (if needed and within limit) ─────────────
+                total_target = min(self._total_jobs, limit) if limit else self._total_jobs
+                if limit and len(self._list_items) >= limit:
+                    self._list_items = self._list_items[:limit]
+                    console.print(f"\n[bold]Step 2/4:[/] Target limit of {limit} jobs already satisfied by page 1. Skipping extra pages. ✓")
                 else:
-                    console.print(f"\n[bold]Step 2/4:[/] All jobs fit on one page. ✓")
+                    total_pages = math.ceil(total_target / self._page_size)
+                    if total_pages > 1:
+                        console.print(f"\n[bold]Step 2/4:[/] Fetching remaining {total_pages - 1} pages (target: {total_target} jobs, delay: {delay:.1f}s)...")
+                        await self._paginate_via_fetch(page, total_pages, limit=limit, delay=delay)
+                    else:
+                        console.print(f"\n[bold]Step 2/4:[/] All requested jobs fit on one page. ✓")
+
+                if limit and len(self._list_items) > limit:
+                    self._list_items = self._list_items[:limit]
 
                 console.print(f"   Total list items collected: [bold green]{len(self._list_items)}[/]")
 
                 # ── Step 3: Fetch details (optional) ──────────────────────────
                 if with_details:
-                    console.print(f"\n[bold]Step 3/4:[/] Fetching details for {len(self._list_items)} jobs...")
-                    await self._fetch_details(page)
+                    console.print(f"\n[bold]Step 3/4:[/] Fetching details for {len(self._list_items)} jobs (polite delay: {delay:.1f}s with jitter)...")
+                    await self._fetch_details(page, delay=delay)
                     console.print(f"   Details collected: [bold green]{len(self._details)}[/]")
                 else:
                     console.print(f"\n[bold]Step 3/4:[/] Skipping details (use --with-details to include).")
@@ -267,8 +292,14 @@ class TwelveTwentyScraper:
 
     # ── Private: Pagination ───────────────────────────────────────────────────
 
-    async def _paginate_via_fetch(self, page: Page, total_pages: int) -> None:
-        """Fetch all remaining pages by replaying the POST request via page.evaluate(fetch(...)).
+    async def _paginate_via_fetch(
+        self,
+        page: Page,
+        total_pages: int,
+        limit: int | None = None,
+        delay: float = 1.5,
+    ) -> None:
+        """Fetch remaining pages by replaying the POST request via page.evaluate(fetch(...)).
 
         Using fetch() inside the browser context ensures we use the same cookies,
         CSRF tokens, and auth headers that the SPA uses natively.
@@ -289,6 +320,9 @@ class TwelveTwentyScraper:
             task = progress.add_task("  Fetching pages...", total=total_pages - 1)
 
             for page_num in range(2, total_pages + 1):
+                if limit and len(self._list_items) >= limit:
+                    break
+
                 try:
                     body = dict(self._captured_request_body)
                     body["PageNumber"] = page_num
@@ -314,10 +348,14 @@ class TwelveTwentyScraper:
                     )
 
                     if isinstance(result, dict) and result.get("_error"):
-                        console.print(f"\n   [red]Error on page {page_num}: {result}[/]")
-                        console.print("   Falling back to scroll pagination for remaining pages...")
-                        await self._paginate_via_scroll(page, total_pages, start_from=page_num)
-                        return
+                        if result.get("status") == 429:
+                            console.print(f"\n   [yellow]⚠ Rate limited (HTTP 429) on page {page_num}. Pausing 10s...[/]")
+                            await asyncio.sleep(10)
+                        else:
+                            console.print(f"\n   [red]Error on page {page_num}: {result}[/]")
+                            console.print("   Falling back to scroll pagination for remaining pages...")
+                            await self._paginate_via_scroll(page, total_pages, start_from=page_num)
+                            return
 
                     items = result.get("Items", [])
                     self._list_items.extend(items)
@@ -327,8 +365,12 @@ class TwelveTwentyScraper:
                         description=f"  Page {page_num}/{total_pages} (+{len(items)} jobs)",
                     )
 
-                    # Small delay to be polite
-                    await page.wait_for_timeout(200)
+                    if limit and len(self._list_items) >= limit:
+                        break
+
+                    # Polite jittered delay
+                    jitter_ms = int(random.uniform(0.85, 1.25) * delay * 1000)
+                    await page.wait_for_timeout(jitter_ms)
 
                 except Exception as e:
                     console.print(f"\n   [red]Error on page {page_num}: {e}[/]")
@@ -370,11 +412,11 @@ class TwelveTwentyScraper:
 
     # ── Private: Detail Fetching ──────────────────────────────────────────────
 
-    async def _fetch_details(self, page: Page) -> None:
+    async def _fetch_details(self, page: Page, delay: float = 1.5) -> None:
         """Fetch full details for each job.
 
         Strategy:
-          1. Try direct GET to the detail API endpoint (fast, ~100ms per job)
+          1. Try direct GET to the detail API endpoint (fast, with signature query if present)
           2. If that requires a signature we don't have, fall back to clicking
              each job in the browser and intercepting the detail XHR (slow, ~2s per job)
         """
@@ -384,6 +426,8 @@ class TwelveTwentyScraper:
         # First, try the direct API approach with a sample job
         sample = self._list_items[0]
         sample_id = str(sample.get("Id", ""))
+        sig = sample.get("Signature") or sample.get("signature") or ""
+        query_param = f"?signature={sig}" if sig else ""
         direct_works = False
 
         if sample_id:
@@ -399,7 +443,7 @@ class TwelveTwentyScraper:
                             return {_error: true, message: e.message};
                         }
                     }""",
-                    f"{DETAIL_URL_PREFIX}{sample_id}",
+                    f"{DETAIL_URL_PREFIX}{sample_id}{query_param}",
                 )
                 if isinstance(result, dict) and not result.get("_error"):
                     direct_works = True
@@ -411,13 +455,13 @@ class TwelveTwentyScraper:
                 console.print(f"   [yellow]Direct API test failed: {e}[/]")
 
         if direct_works:
-            await self._fetch_details_direct(page)
+            await self._fetch_details_direct(page, delay=delay)
         else:
             console.print("   [yellow]Using browser click-through (slower but reliable)...[/]")
-            await self._fetch_details_via_clicks(page)
+            await self._fetch_details_via_clicks(page, delay=delay)
 
-    async def _fetch_details_direct(self, page: Page) -> None:
-        """Fast path: GET each job's detail directly via the API."""
+    async def _fetch_details_direct(self, page: Page, delay: float = 1.5) -> None:
+        """Fast path: GET each job's detail directly via the API with polite pacing."""
         # Skip the first one since we already fetched it in the test
         remaining = [
             item for item in self._list_items
@@ -436,6 +480,8 @@ class TwelveTwentyScraper:
 
             for item in remaining:
                 job_id = str(item.get("Id", ""))
+                sig = item.get("Signature") or item.get("signature") or ""
+                query_param = f"?signature={sig}" if sig else ""
                 title = item.get("TitleDisplay", "?")[:40]
 
                 try:
@@ -449,23 +495,28 @@ class TwelveTwentyScraper:
                                 return {_error: true, message: e.message};
                             }
                         }""",
-                        f"{DETAIL_URL_PREFIX}{job_id}",
+                        f"{DETAIL_URL_PREFIX}{job_id}{query_param}",
                     )
 
                     if isinstance(result, dict) and not result.get("_error"):
                         self._details[job_id] = result
                     else:
-                        console.print(f"\n   [dim red]Failed: {title} → {result}[/]")
+                        if isinstance(result, dict) and result.get("status") == 429:
+                            console.print("\n   [yellow]⚠ Rate limited (HTTP 429). Pausing 10s...[/]")
+                            await asyncio.sleep(10)
+                        else:
+                            console.print(f"\n   [dim red]Failed: {title} → {result}[/]")
 
                 except Exception as e:
                     console.print(f"\n   [dim red]Error for {title}: {e}[/]")
 
                 progress.update(task, advance=1, description=f"  {title}")
 
-                # Small delay to be polite to the server
-                await page.wait_for_timeout(150)
+                # Polite jittered delay
+                jitter_ms = int(random.uniform(0.85, 1.25) * delay * 1000)
+                await page.wait_for_timeout(jitter_ms)
 
-    async def _fetch_details_via_clicks(self, page: Page) -> None:
+    async def _fetch_details_via_clicks(self, page: Page, delay: float = 1.5) -> None:
         """Slow path: click each job in the list and intercept the detail XHR response.
 
         This handles cases where the detail endpoint requires a signed URL
@@ -492,7 +543,6 @@ class TwelveTwentyScraper:
 
             while fetched_count < len(self._list_items):
                 # Find all clickable job rows on the current page
-                # 12twenty uses various selectors — try multiple patterns
                 job_rows = await page.query_selector_all(
                     "[class*='job-posting-row'], "
                     "[class*='jobPosting'], "
@@ -559,7 +609,9 @@ class TwelveTwentyScraper:
                         else:
                             await page.keyboard.press("Escape")
 
-                        await page.wait_for_timeout(500)
+                        # Polite delay with jitter
+                        jitter_ms = int(random.uniform(0.85, 1.25) * delay * 1000)
+                        await page.wait_for_timeout(jitter_ms)
 
                     except Exception as e:
                         console.print(f"\n   [dim red]Click error: {e}[/]")
