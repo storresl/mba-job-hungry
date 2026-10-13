@@ -1,0 +1,32 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# === Rust ===
+/backend/target/
+**/*.rs.bk
+Cargo.lock
+
+# === Scraper session (contains auth cookies — NEVER commit) ===
+.session/
+
+# === Scraped data ===
+data/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# === Environment ===
+.env
+.env.local

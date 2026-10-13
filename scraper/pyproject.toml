@@ -1,0 +1,26 @@
+[project]
+name = "mba-jobs-scraper"
+version = "0.1.0"
+description = "12twenty job postings scraper for INSEAD MBA students"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.40",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "mypy",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
