@@ -1,8 +1,8 @@
-# MBA Jobs Scraper
+# MBA Jobs
 
-A local tool that downloads job postings from INSEAD's authenticated 12twenty portal as
-JSON. It uses the same internal requests as the web application, deduplicates jobs by ID,
-and paces requests to avoid placing unnecessary load on the website.
+A job workspace for the INSEAD community. The Python scraper downloads job offers
+from the authenticated 12twenty portal to local JSON. A Next.js web app now provides
+the initial UI shell; its data and authentication integrations are the next steps.
 
 ## Project Structure
 
@@ -13,13 +13,31 @@ mba-jobs/
 │   ├── tests/
 │   └── src/
 │       └── mba_jobs_scraper/
+├── web/                  # Next.js, TypeScript, Tailwind, shadcn/ui
 ├── data/                 # Scraped data (gitignored)
 │   ├── runs/             # Raw data per scrape run
 │   └── latest.json       # Most recent scrape
 └── README.md
 ```
 
-## Quick Start
+## Web app
+
+Install Node.js 20.18.1 or newer, then run:
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+The shell is available at [http://localhost:3000](http://localhost:3000).
+It has no job data or authentication yet and should not be deployed as a protected
+job board. The next access milestone is a verified email OTP for `@insead.edu`;
+institutional SSO can follow later. The three planned KPIs are job offers first
+seen in the rolling last 24 hours, first seen in the rolling last 168 hours,
+and total current offers. They show empty values until the database is connected.
+
+## Scraper quick start
 
 ### 1. Install the scraper
 
@@ -87,4 +105,5 @@ python -m unittest discover -s tests
 |-------|-----------|---------|
 | Scraper | Python + Playwright | Browser automation, XHR interception |
 | Output | JSON | Local timestamped snapshots and latest result |
-| CLI | Rich | Progress and summaries |
+| Web | Next.js + shadcn/ui | UI shell (authentication and data pending) |
+| CLI | Rich | Scraper progress and summaries |

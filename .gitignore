@@ -30,3 +30,6 @@ data/
 # === Environment ===
 .env
 .env.local
+
+# === Local JavaScript runtime ===
+.tools/
