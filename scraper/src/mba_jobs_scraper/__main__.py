@@ -2,8 +2,8 @@
 
 Usage:
     python -m mba_jobs_scraper login                    # Save browser session
-    python -m mba_jobs_scraper scrape                   # Scrape job listings
-    python -m mba_jobs_scraper scrape --with-details    # Include full job details
+    python -m mba_jobs_scraper scrape                   # Save only new job listings
+    python -m mba_jobs_scraper scrape --with-details    # New jobs with full details
     python -m mba_jobs_scraper scrape --visible          # Show browser window
     python -m mba_jobs_scraper explore                  # Open browser + DevTools
 """
@@ -54,12 +54,12 @@ def main() -> None:
     # ── scrape ────────────────────────────────────────────────────────────
     scrape_parser = subparsers.add_parser(
         "scrape",
-        help="Scrape all job postings from the portal.",
+        help="Find offers not present in saved JSON and save only those jobs.",
     )
     scrape_parser.add_argument(
         "--with-details",
         action="store_true",
-        help="Also fetch full details for each job (description, salary, etc.). Slower.",
+        help="Fetch full details for each new job (description, salary, etc.). Slower.",
     )
     scrape_parser.add_argument(
         "--visible",
@@ -71,7 +71,7 @@ def main() -> None:
         "-n",
         type=positive_int,
         default=None,
-        help="Limit the number of jobs to fetch (e.g. 50).",
+        help="Check at most this many portal listings (may find fewer new jobs).",
     )
     scrape_parser.add_argument(
         "--delay",
@@ -105,7 +105,7 @@ def main() -> None:
 
         if jobs:
             # Print a quick summary
-            console.print("\n[bold]📊 Summary[/]")
+            console.print("\n[bold]📊 New-offer summary[/]")
             companies: dict[str, int] = {}
             locations: dict[str, int] = {}
             for job in jobs:

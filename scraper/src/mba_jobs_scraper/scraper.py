@@ -6,9 +6,9 @@ Strategy:
   2. Navigate to job listings → triggers the internal POST /Api/V2/job-postings/post-query XHR
   3. Intercept the request to learn the exact POST body format (filters, pagination, etc.)
   4. Replay the API call with modified page numbers via page.evaluate(fetch(...))
-  5. For full details, fetch the portal's OCI and core job-posting endpoints
+  5. Compare IDs with saved jobs and fetch details only for unseen offers
   6. Fall back to clicking each job in the list and intercepting the detail XHR
-  7. Export everything to JSON files
+  7. Export new offers and maintain a deduplicated local archive
 """
 
 from __future__ import annotations
@@ -124,16 +124,16 @@ class TwelveTwentyScraper:
         limit: int | None = None,
         delay: float = 1.5,
     ) -> list[dict[str, Any]]:
-        """Scrape job postings from the portal with polite rate-limiting.
+        """Find and save previously unseen job postings with polite rate-limiting.
 
         Args:
-            with_details: If True, also fetch the full detail page for each job.
+            with_details: If True, fetch full details for each new job.
             headless: If False, shows the browser window (useful for debugging).
-            limit: Maximum number of jobs to fetch (e.g. 50).
+            limit: Maximum number of portal listings to check (e.g. 50).
             delay: Polite delay between requests in seconds (with jitter).
 
         Returns:
-            List of job dictionaries, each containing 'list_data' and optionally 'detail_data'.
+            Newly discovered jobs, each with 'list_data' and optional 'detail_data'.
         """
         if limit is not None and limit <= 0:
             raise ValueError("limit must be greater than zero")
@@ -148,9 +148,11 @@ class TwelveTwentyScraper:
             return []
 
         self._reset_run_state()
+        saved_jobs = self._load_saved_jobs()
 
         console.print("\n[bold]🔍 MBA Jobs Scraper[/]")
         console.print(f"   Mode: {'with details' if with_details else 'list only'}")
+        console.print(f"   Previously saved: [cyan]{len(saved_jobs)}[/] unique jobs")
         console.print(f"   Headless: {headless}")
         if limit:
             console.print(f"   Limit: [cyan]{limit}[/] jobs")
@@ -231,12 +233,14 @@ class TwelveTwentyScraper:
                 console.print(
                     f"   Total list items collected: [bold green]{len(self._list_items)}[/]"
                 )
+                self._keep_new_list_items(saved_jobs)
+                console.print(f"   Newly discovered: [bold green]{len(self._list_items)}[/] jobs")
 
                 # ── Step 3: Fetch details (optional) ──────────────────────────
                 if with_details:
                     console.print(
                         f"\n[bold]Step 3/4:[/] Fetching details for "
-                        f"{len(self._list_items)} jobs "
+                        f"{len(self._list_items)} new jobs "
                         f"(polite delay: {delay:.1f}s with jitter)..."
                     )
                     await self._fetch_details(page, delay=delay)
@@ -248,9 +252,9 @@ class TwelveTwentyScraper:
 
                 # ── Step 4: Export ────────────────────────────────────────────
                 console.print("\n[bold]Step 4/4:[/] Exporting data...")
-                jobs = self._export()
+                jobs = self._export(saved_jobs)
 
-                console.print(f"\n[bold green]✓ Done![/] {len(jobs)} jobs exported.\n")
+                console.print(f"\n[bold green]✓ Done![/] {len(jobs)} new jobs exported.\n")
                 return jobs
 
             finally:
@@ -514,98 +518,61 @@ class TwelveTwentyScraper:
                 added += 1
         return added
 
-    # ── Private: Detail Fetching & Caching ─────────────────────────────────────
+    def _keep_new_list_items(self, saved_jobs: dict[str, dict[str, Any]]) -> None:
+        """Retain only offers whose IDs have never appeared in saved data."""
+        self._list_items = [item for item in self._list_items if str(item["Id"]) not in saved_jobs]
 
-    def _load_cached_details(self) -> dict[str, tuple[str | None, dict[str, Any]]]:
-        """Load previously scraped job details from latest.json and recent run files.
+    # ── Private: Saved Jobs & Detail Fetching ──────────────────────────────────
 
-        Returns:
-            Dictionary mapping job_id (str) -> (ModifyDate, detail_data).
-        """
-        cache: dict[str, tuple[str | None, dict[str, Any]]] = {}
+    @staticmethod
+    def _load_saved_jobs() -> dict[str, dict[str, Any]]:
+        """Read the archive and legacy snapshots so previously seen IDs stay known."""
+        candidate_files = [DATA_DIR / "jobs.json", DATA_DIR / "latest.json"]
+        candidate_files.extend(sorted((DATA_DIR / "runs").glob("*/scrape_*.json"), reverse=True))
 
-        candidate_files: list[Path] = []
-        latest_file = DATA_DIR / "latest.json"
-        if latest_file.exists():
-            candidate_files.append(latest_file)
-
-        runs_dir = DATA_DIR / "runs"
-        if runs_dir.exists():
-            run_files = sorted(runs_dir.glob("*/*.json"), reverse=True)
-            candidate_files.extend(f for f in run_files if f.name != "api_request_body.json")
-
+        jobs_by_id: dict[str, dict[str, Any]] = {}
         for filepath in candidate_files:
-            try:
-                data = json.loads(filepath.read_text(encoding="utf-8"))
-                for job in data.get("jobs", []):
-                    job_id = str(job.get("id") or "")
-                    detail_data = job.get("detail_data")
-                    if not job_id or not detail_data:
-                        continue
-                    if job_id not in cache:
-                        list_data = job.get("list_data") or {}
-                        modify_date = list_data.get("ModifyDate")
-                        cache[job_id] = (modify_date, detail_data)
-            except Exception:
+            if not filepath.exists():
                 continue
+            try:
+                payload = json.loads(filepath.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"Cannot read saved jobs from {filepath}; refusing to risk duplicate offers"
+                ) from exc
+            if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+                raise RuntimeError(f"Invalid saved jobs in {filepath}; refusing to risk duplicates")
 
-        return cache
+            for job in payload["jobs"]:
+                if not isinstance(job, dict) or not job.get("id"):
+                    raise RuntimeError(f"Invalid job in {filepath}; refusing to risk duplicates")
+                job_id = str(job["id"])
+                seen_at = (
+                    job.get("first_seen_at") or job.get("scraped_at") or payload.get("scraped_at")
+                )
+                if job_id not in jobs_by_id:
+                    jobs_by_id[job_id] = dict(job, id=job_id)
+                else:
+                    saved = jobs_by_id[job_id]
+                    if not saved.get("detail_data") and job.get("detail_data"):
+                        saved["detail_data"] = job["detail_data"]
+                saved = jobs_by_id[job_id]
+                if seen_at and (not saved.get("first_seen_at") or seen_at < saved["first_seen_at"]):
+                    saved["first_seen_at"] = seen_at
+
+        return jobs_by_id
 
     async def _fetch_details(self, page: Page, delay: float = 1.5) -> None:
-        """Fetch full details for each job, reusing cached details where ModifyDate is unchanged.
-
-        Strategy:
-          1. Load previously scraped details from data/latest.json (and recent run files).
-          2. Reuse details when the job's ModifyDate is unchanged.
-          3. Fetch new or modified jobs from the OCI and core job-posting APIs.
-          4. Fall back to UI clicks only if direct API access fails.
-        """
+        """Fetch details for newly discovered jobs, with a browser click fallback."""
         if not self._list_items:
             return
 
-        # 1. Load cached details
-        cached = self._load_cached_details()
-        cached_count = 0
-
-        for item in self._list_items:
-            job_id = str(item.get("Id", ""))
-            current_modify_date = item.get("ModifyDate")
-
-            if job_id in cached:
-                cached_modify_date, cached_detail = cached[job_id]
-                if (
-                    cached_detail
-                    and current_modify_date is not None
-                    and cached_modify_date == current_modify_date
-                ):
-                    self._details[job_id] = cached_detail
-                    cached_count += 1
-
-        if cached_count > 0:
-            console.print(
-                f"   [bold green]✓ Reusing cached details for "
-                f"{cached_count}/{len(self._list_items)} jobs[/] "
-                f"(ModifyDate unchanged since last scrape)."
-            )
-
-        # 2. Filter remaining jobs that need detail fetching
-        remaining = [
-            item for item in self._list_items if str(item.get("Id", "")) not in self._details
-        ]
-
-        if not remaining:
-            console.print(
-                "   [bold green]✓ All jobs have up-to-date cached details. "
-                "Skipping network fetch.[/]"
-            )
-            return
-
         console.print(
-            f"   Fetching details for [cyan]{len(remaining)}[/] new/modified jobs "
+            f"   Fetching details for [cyan]{len(self._list_items)}[/] new jobs "
             f"(delay: {delay:.1f}s)..."
         )
 
-        failed = await self._fetch_details_direct(page, remaining=remaining, delay=delay)
+        failed = await self._fetch_details_direct(page, remaining=self._list_items, delay=delay)
         if failed:
             console.print(
                 f"   [yellow]Using browser click-through fallback for {len(failed)} jobs...[/]"
@@ -836,15 +803,16 @@ class TwelveTwentyScraper:
 
     # ── Private: Export ───────────────────────────────────────────────────────
 
-    def _export(self) -> list[dict[str, Any]]:
-        """Merge list items with detail data and save to JSON files."""
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    def _export(self, saved_jobs: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        """Save only new offers and update the unique archive."""
+        if saved_jobs is None:
+            saved_jobs = self._load_saved_jobs()
 
         now = datetime.now(UTC)
         timestamp = now.strftime("%Y-%m-%dT%H-%M-%S-%f")
         date_str = now.strftime("%Y-%m-%d")
 
-        # Build merged job objects
+        # Build new job objects, preserving the original scrape timestamp.
         jobs: list[dict[str, Any]] = []
         for item in self._list_items:
             job_id = str(item.get("Id", ""))
@@ -853,14 +821,19 @@ class TwelveTwentyScraper:
                 "list_data": item,
                 "detail_data": self._details.get(job_id),
                 "scraped_at": now.isoformat(),
+                "first_seen_at": now.isoformat(),
             }
             jobs.append(job)
 
         job_ids = [job["id"] for job in jobs]
         if len(job_ids) != len(set(job_ids)):
             raise RuntimeError("refusing to export duplicate job IDs")
+        if set(job_ids) & saved_jobs.keys():
+            raise RuntimeError("refusing to export previously saved job IDs")
 
-        # ── Save per-run snapshot ─────────────────────────────────────────
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+        # ── Save the new-offer batch for this run ─────────────────────────
         run_dir = DATA_DIR / "runs" / date_str
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -877,7 +850,7 @@ class TwelveTwentyScraper:
             f"   Run data → [link=file://{run_file}]{run_file.relative_to(PROJECT_ROOT)}[/]"
         )
 
-        # ── Save latest (always overwritten) ──────────────────────────────
+        # ── Save latest new-offer batch (always overwritten) ──────────────
         latest_file = DATA_DIR / "latest.json"
         latest_payload = {
             "scraped_at": now.isoformat(),
@@ -888,6 +861,22 @@ class TwelveTwentyScraper:
         self._write_json(latest_file, latest_payload)
         console.print(
             f"   Latest   → [link=file://{latest_file}]{latest_file.relative_to(PROJECT_ROOT)}[/]"
+        )
+
+        # ── Save all jobs ever seen, once per ID ──────────────────────────
+        archive_file = DATA_DIR / "jobs.json"
+        archive = dict(saved_jobs)
+        archive.update((job["id"], job) for job in jobs)
+        self._write_json(
+            archive_file,
+            {
+                "updated_at": now.isoformat(),
+                "total_jobs": len(archive),
+                "jobs": list(archive.values()),
+            },
+        )
+        console.print(
+            f"   Archive  → [link=file://{archive_file}]{archive_file.relative_to(PROJECT_ROOT)}[/]"
         )
 
         # ── Also save the raw captured POST body for debugging ────────────

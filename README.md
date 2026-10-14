@@ -1,8 +1,8 @@
-# MBA Jobs
+# MBA Job Hungry
 
 A job workspace for the INSEAD community. The Python scraper downloads job offers
-from the authenticated 12twenty portal to local JSON. A Next.js web app now provides
-the initial UI shell; its data and authentication integrations are the next steps.
+from the authenticated 12twenty portal to local JSON. The Next.js dashboard reads
+that local archive for job counts and recent offers.
 
 ## Project Structure
 
@@ -15,8 +15,9 @@ mba-jobs/
 │       └── mba_jobs_scraper/
 ├── web/                  # Next.js, TypeScript, Tailwind, shadcn/ui
 ├── data/                 # Scraped data (gitignored)
-│   ├── runs/             # Raw data per scrape run
-│   └── latest.json       # Most recent scrape
+│   ├── runs/             # New offers found in each run
+│   ├── latest.json       # New offers from the most recent run
+│   └── jobs.json         # All unique offers ever seen
 └── README.md
 ```
 
@@ -30,12 +31,15 @@ npm install
 npm run dev
 ```
 
-The shell is available at [http://localhost:3000](http://localhost:3000).
-It has no job data or authentication yet and should not be deployed as a protected
-job board. The next access milestone is a verified email OTP for `@insead.edu`;
-institutional SSO can follow later. The three planned KPIs are job offers first
-seen in the rolling last 24 hours, first seen in the rolling last 168 hours,
-and total current offers. They show empty values until the database is connected.
+The dashboard is available at [http://localhost:3000](http://localhost:3000)
+in development. It reads `data/jobs.json` on each request, counts offers published
+in the rolling last 24 and 168 hours, and shows the total unique offers in the
+archive. Recent offers are ordered by the portal's `PostedDate` and shown six at
+a time. The portal timestamps have no timezone; the app interprets them as UTC.
+
+The local archive contains private portal data. The dashboard sends only the
+fields needed for the cards and stays unavailable in production until verified
+`@insead.edu` sign-in and server-side authorization are implemented.
 
 ## Scraper quick start
 
@@ -58,13 +62,13 @@ This opens a browser window. Log in to the INSEAD portal, then press Enter in th
 ### 3. Scrape jobs
 
 ```bash
-# List only (fast — just the job listing data)
+# Save only offers not found in previous JSON files
 python -m mba_jobs_scraper scrape
 
-# With full details for each job (slower — fetches description, salary, etc.)
+# Fetch descriptions and other details for new offers only
 python -m mba_jobs_scraper scrape --with-details
 
-# Fetch at most 50 jobs
+# Check only the first 50 portal listings (may miss newer offers beyond them)
 python -m mba_jobs_scraper scrape --limit 50
 
 # Increase the delay between requests (minimum: 1 second; default: 1.5 seconds)
@@ -74,9 +78,15 @@ python -m mba_jobs_scraper scrape --delay 2.5
 python -m mba_jobs_scraper scrape --visible
 ```
 
-Each run writes a timestamped snapshot under `data/runs/YYYY-MM-DD/` and atomically
-updates `data/latest.json`. When details are requested, unchanged details from earlier
-runs are reused so the scraper makes fewer requests.
+The scraper checks portal listing pages against IDs in your saved JSON. Each run writes
+only newly discovered offers to a timestamped file under `data/runs/YYYY-MM-DD/` and
+atomically updates `data/latest.json` with that new batch (which can be empty).
+`data/jobs.json` is the deduplicated archive of every offer ever seen, including offers
+that may no longer appear in the portal. On the first run after this change, existing
+`data/latest.json` and older run snapshots seed the archive,
+so those jobs are not fetched again. Full details are requested only for new offers.
+The listing pages still have to be checked to discover new IDs; omit `--limit` to check
+all available portal listings.
 
 If the portal responds with HTTP 429 or a temporary server error, the scraper uses
 bounded exponential backoff. It does not retry authentication or other client errors.
@@ -104,6 +114,6 @@ python -m unittest discover -s tests
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
 | Scraper | Python + Playwright | Browser automation, XHR interception |
-| Output | JSON | Local timestamped snapshots and latest result |
+| Output | JSON | New-offer batches and a unique cumulative archive |
 | Web | Next.js + shadcn/ui | UI shell (authentication and data pending) |
 | CLI | Rich | Scraper progress and summaries |

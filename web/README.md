@@ -1,6 +1,6 @@
-# MBA Jobs web
+# MBA Job Hungry web
 
-Next.js App Router shell using TypeScript, Tailwind CSS, and shadcn/ui.
+Next.js App Router dashboard using TypeScript, Tailwind CSS, and shadcn/ui.
 
 ## Run locally
 
@@ -13,17 +13,19 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## Current scope
+## Dashboard data
 
-The home page is a UI preview. Its three KPI cards intentionally have no values.
-The next milestones are verified `@insead.edu` email OTP, a Supabase jobs table,
-and an idempotent import from the scraper's JSON output. Institutional SSO can
-replace or supplement email OTP later. Do not deploy this shell as a protected
-job board until authentication and server-side authorization are in place.
+The dashboard reads `../data/jobs.json` on every request. Run the scraper first to
+create the archive. The three KPIs are total unique archived offers, offers
+published in the rolling last 168 hours, and offers published in the rolling
+last 24 hours. Jobs are sorted by the portal's `PostedDate` and paged six at a time.
+`PostedDate` has no timezone in the source JSON, so the dashboard treats it as UTC.
 
-The KPI windows are rolling durations from the query time: 24 hours, 168 hours,
-and all current jobs. A job's first-seen timestamp will be set on initial import
-and retained on later upserts.
+Only the title, company, location, publication date, and a short plain-text
+description are selected from the archive for rendering. The archive also holds
+private portal data, so this route is limited to local development. The next
+access milestone is verified `@insead.edu` email OTP with server-side authorization;
+institutional SSO can follow later.
 
 ## Checks
 
